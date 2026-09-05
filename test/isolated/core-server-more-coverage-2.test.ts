@@ -120,6 +120,8 @@ mock.module(import.meta.resolve("../../src/core/transport/pty"), () => ({
 mock.module(import.meta.resolve("../../src/lib/elysia-auth"), () => ({
   isProtected: () => false,
   setBunServer: () => {},
+  rememberClientIp: () => {},
+  resolveClientIp: () => undefined,
 }));
 mock.module(import.meta.resolve("../../src/plugin/lifecycle"), () => ({
   runServeLifecycleHooks: async () => {

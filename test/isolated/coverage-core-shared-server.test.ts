@@ -105,6 +105,8 @@ mock.module(import.meta.resolve("../../src/lib/elysia-auth"), () => ({
   isProtected: (path: string, method: string) => method === "POST" && (
     path === "/triggers/fire" || path === "/worktrees/cleanup" || path === "/protected-auth-fail"
   ),
+  rememberClientIp: () => {},
+  resolveClientIp: () => undefined,
 }));
 mock.module(import.meta.resolve("../../src/plugin/lifecycle"), () => ({
   runServeLifecycleHooks: async (payload: any) => {
@@ -380,6 +382,9 @@ function upgradeServer(ok: boolean) {
     upgrade(req: Request, opts: unknown) {
       this.upgrades.push({ req, ...(opts as object) });
       return ok;
+    },
+    requestIP(_req: Request) {
+      return { address: "127.0.0.1", family: "IPv4", port: 0 };
     },
   };
 }
