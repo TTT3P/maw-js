@@ -146,7 +146,16 @@ describe("coverage 100b runtime hooks", () => {
     };
     delete process.env.CLAUDE_AGENT_NAME;
     const second = await importHooks("plain-path");
-    await second.runHook("after_send", { to: "receiver", message: "hello" });
+    // inferCaller falls back to a `<name>-oracle` cwd segment before "unknown",
+    // so pin cwd to a neutral tmpdir (a dev checkout under *-oracle otherwise
+    // leaks its path into MAW_FROM).
+    const prevCwd = process.cwd();
+    process.chdir(globalConfigSandbox);
+    try {
+      await second.runHook("after_send", { to: "receiver", message: "hello" });
+    } finally {
+      process.chdir(prevCwd);
+    }
 
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0].args).toEqual(["-c", "/usr/local/bin/plain-hook"]);

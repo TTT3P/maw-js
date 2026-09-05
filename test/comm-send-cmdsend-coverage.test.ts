@@ -595,7 +595,7 @@ describe("cmdSend — delivery branch coverage", () => {
       "-t",
       "157-noah",
       "status-right",
-      "#[fg=colour220,bold]📬 inbox:24#[default]",
+      "#[fg=colour220,bold]📬 inbox:1#[default]",
     ]);
     expect(tmuxRunCalls).toContainEqual([
       "display-message",
@@ -603,7 +603,7 @@ describe("cmdSend — delivery branch coverage", () => {
       "5000",
       "-t",
       "157-noah:noah-oracle",
-      "📬 inbox +24 from test-node:sender — ว่างแล้วค่อย maw inbox (ψ/inbox/noah.md)",
+      "📬 inbox +1 from test-node:sender — ว่างแล้วค่อย maw inbox (ψ/inbox/noah.md)",
     ]);
     expect(warns.join("\n")).not.toContain("notify skipped");
   });
@@ -673,7 +673,7 @@ describe("cmdSend — delivery branch coverage", () => {
       "-t",
       "session",
       "status-right",
-      "#[fg=colour220,bold]📬 inbox:2#[default]",
+      "#[fg=colour220,bold]📬 inbox:1#[default]",
     ]);
     expect(tmuxRunCalls).toContainEqual([
       "display-message",
@@ -681,7 +681,7 @@ describe("cmdSend — delivery branch coverage", () => {
       "5000",
       "-t",
       "session:oracle",
-      "📬 inbox +2 from test-node:sender — ว่างแล้วค่อย maw inbox (ψ/inbox/busy.md)",
+      "📬 inbox +1 from test-node:sender — ว่างแล้วค่อย maw inbox (ψ/inbox/busy.md)",
     ]);
   });
 

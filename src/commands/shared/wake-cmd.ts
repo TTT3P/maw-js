@@ -940,8 +940,10 @@ async function recoverExactFleetChildWindow(
   requestedTarget: string,
   opts: WakeOptions,
 ): Promise<string | null> {
+  // Belt to fleet-load-core's normalization: a fleet session handed in by a
+  // narrow test mock (or any future loader) may still lack windows.
   const matches = (await loadWakeFleetSessions()).flatMap((session) =>
-    session.windows
+    (session.windows ?? [])
       .filter((window) => window.name === requestedTarget)
       .map((window) => ({ session, window })));
   if (matches.length === 0) return null;

@@ -28,6 +28,17 @@ let fleetDir: string;
 beforeAll(async () => {
   const paths = await import("../../src/core/paths");
   fleetDir = paths.FLEET_DIR;
+  // Defense in depth (fleet-quarantine-01 incident): this suite PUTs real
+  // files into FLEET_DIR. If paths was imported before our env override —
+  // e.g. someone ran multiple files in one raw `bun test` process — the PUTs
+  // would land in the operator's real ~/.maw/fleet. Refuse to run then.
+  if (!fleetDir.startsWith(TEST_CONFIG_DIR)) {
+    throw new Error(
+      `FLEET_DIR (${fleetDir}) is not under the test sandbox — src/core/paths was ` +
+      "imported before MAW_CONFIG_DIR was set. Run this file in its own process " +
+      "(bun run test:isolated).",
+    );
+  }
   const { configApi } = await import("../../src/api/config");
   app = new Elysia().use(configApi);
 });

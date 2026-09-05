@@ -93,7 +93,11 @@ function readFleetFiles(dirs: string[]): Array<{ file: string; path: string; ses
       if (byName.has(file)) continue;
       const path = join(dir, file);
       try {
-        byName.set(file, { file, path, session: JSON.parse(readFileSync(path, "utf-8")) as FleetSession });
+        const session = JSON.parse(readFileSync(path, "utf-8")) as FleetSession;
+        // Legacy/hand-written fleet files (pre-schemaVersion) may omit windows;
+        // consumers iterate it unconditionally, so normalize here.
+        if (!Array.isArray(session.windows)) session.windows = [];
+        byName.set(file, { file, path, session });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`invalid fleet JSON ${path}: ${message}`);

@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { buildCommandInDirFromConfig } from "../src/config/command-logic";
-import { buildWakeCommand } from "../src/commands/shared/wake-cmd";
 import { validatePluginCliFlags } from "../src/cli/dispatch-match";
 import type { LoadedPlugin } from "../src/plugin/types";
 
@@ -26,20 +25,10 @@ describe("wake --fresh-session strips --continue from the launch line", () => {
   });
 });
 
-describe("buildWakeCommand wiring: freshSession routes exactly like freshLaunch", () => {
-  test("freshSession produces the same launch line as freshLaunch", () => {
-    const viaSession = buildWakeCommand("w", "/repos/x", { freshSession: true });
-    const viaLaunch = buildWakeCommand("w", "/repos/x", { freshLaunch: true });
-    expect(viaSession).toBe(viaLaunch);
-  });
-
-  test("neither flag → the two fresh forms still agree, and a plain wake may differ", () => {
-    // config-independent invariant: the two fresh forms are always equal
-    const a = buildWakeCommand("w", "/repos/x", {});
-    const b = buildWakeCommand("w", "/repos/x", { freshSession: false, freshLaunch: false });
-    expect(a).toBe(b);
-  });
-});
+// The "buildWakeCommand wiring: freshSession routes exactly like freshLaunch"
+// describe moved to test/isolated/wake-fresh-session-wiring.test.ts —
+// buildWakeCommand loads the real config through import-frozen CONFIG_DIR, so
+// it needs an isolated file that sets MAW_CONFIG_DIR before importing.
 
 describe("the flags are declared on the wake manifest so the dispatcher reaches the handler", () => {
   // The CLI validates argv against the plugin manifest's cli.flags BEFORE

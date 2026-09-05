@@ -39,7 +39,17 @@ describe("done command plugin standalone boundary", () => {
     const imports = expectStandalonePluginBoundary({
       plugin: "done",
       files: ["impl.ts", "done-autosave.ts", "done-worktree.ts", "retrospective-command.ts"],
-      allowRelative: ["./done-autosave", "./done-worktree", "../../../core/xdg"],
+      allowRelative: [
+        "./done-autosave",
+        "./done-worktree",
+        "../../../core/xdg",
+        // f657b392 — engine-aware retro selection pulls the engine registry
+        // and fleet types into retrospective-command.ts.
+        "../../../core/fleet/fleet-load-core",
+        "../../../core/engine/is-claude-like",
+        "../../../config/engine-registry",
+        "../../../config/types",
+      ],
       allowMawJs: [
         /^maw-js\/core\/matcher\/normalize-target$/,
         /^maw-js\/core\/fleet\/worktree-layout$/,
@@ -49,9 +59,12 @@ describe("done command plugin standalone boundary", () => {
         /^maw-js\/vendor\/mpr-plugins\/team\/team-charter$/,
         /^maw-js\/vendor\/mpr-plugins\/team\/team-liveness$/,
       ],
+      // c6669ecc/1a06de2d — SDK access now routes through the DoneDeps
+      // binding module instead of direct maw-js/sdk imports.
+      requireSdk: false,
     }).map((record) => record.spec);
 
-    expect(imports).toContain("maw-js/sdk");
+    expect(imports).toContain("./done-deps");
     expect(imports).toContain("./retrospective-command");
   });
 

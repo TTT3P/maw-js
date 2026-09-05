@@ -105,7 +105,9 @@ describe("maw inbox drain --all (bulk owner archive)", () => {
     expect(none.error).toMatch(/\(--safe \| --all\)/);
     const dry = await handler({ source: "cli", args: ["drain", "--all", "--dry-run", "--older-than-hours", "24"] } as any);
     expect(dry.ok).toBe(true);
-    expect(dry.output).toContain("would archive 2/2 inbox message(s) [--all]");
+    // 721fbc1b — stale slice acknowledgements now leave the inbox too, so the
+    // read peer_ack fixture counts as a drain candidate (2/2 → 3/3).
+    expect(dry.output).toContain("would archive 3/3 inbox message(s) [--all]");
     expect(topLevel().length).toBe(3);
   });
 });
