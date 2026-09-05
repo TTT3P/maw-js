@@ -97,7 +97,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: test
+    # Without an `if`, a failed test matrix leaves build "skipped", and GitHub
+    # counts a skipped required check as passing (pass-by-omission). Run
+    # always and fail explicitly unless every test shard actually succeeded.
+    if: always()
     steps:
+      - name: Require green test matrix (reject failed/skipped dependencies)
+        if: needs.test.result != 'success'
+        run: |
+          echo "test matrix result: ${{ needs.test.result }} — build must not pass by omission"
+          exit 1
+
       - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
