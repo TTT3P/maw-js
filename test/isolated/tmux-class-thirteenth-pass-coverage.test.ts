@@ -159,7 +159,9 @@ describe("tmux-class thirteenth-pass isolated coverage", () => {
 
   test("sendText covers long buffered sends, exhausted submit confirmation warnings, and capture failures", async () => {
     const pending = new SubmitProbeTmux();
-    pending.captureScript = ["agent$ still pending", "agent% still pending", "agent> still pending", "agent❯ still pending"];
+    // 3707438a — a marker glued to a word char ("agent$") now reads as a
+    // status bar, not pending input; real prompts keep a boundary before it.
+    pending.captureScript = ["$ still pending", "% still pending", "> still pending", "❯ still pending"];
 
     await pending.sendText("alpha:0.0", "x".repeat(501));
 

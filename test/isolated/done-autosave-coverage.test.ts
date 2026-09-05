@@ -21,12 +21,22 @@ let sendTextError: unknown = null;
 let reunionCalls: string[] = [];
 let soulSyncCalls: Array<{ target?: string; opts?: { cwd?: string } }> = [];
 let soulSyncError: unknown = null;
+let fleetEngine: string | null = "claude";
 
 mock.module("os", () => ({
   homedir: () => homeDir,
 }));
 
 mock.module("maw-js/sdk", () => ({
+  // Since f657b392 the retro form comes from the window's authoritative engine
+  // (fleet runtime.engine), never pane_current_command.
+  loadFleetEntries: () => fleetEngine === null ? [] : [{
+    file: "work.json", path: "/state/fleet/work.json", num: null, groupName: "work",
+    session: { name: "work", windows: [
+      { name: "tile-1", repo: "x/y", runtime: { engine: fleetEngine } },
+      { name: "tile-2", repo: "x/y", runtime: { engine: fleetEngine } },
+    ] },
+  }],
   hostExec: async (command: string) => {
     hostExecCalls.push(command);
     return await hostExecHandler(command);
@@ -62,7 +72,8 @@ beforeEach(() => {
   rmSync(homeDir, { recursive: true, force: true });
   homeDir = join(SANDBOX, "home");
   hostExecCalls = [];
-  hostExecHandler = (command) => command.includes("pane_current_path") ? "bash\t/repo/worktree\n" : "";
+  hostExecHandler = (command) => command.includes("pane_current_path") ? "/repo/worktree\n" : "";
+  fleetEngine = "claude";
   sentTexts = [];
   sendTextError = null;
   reunionCalls = [];
@@ -148,7 +159,7 @@ describe("done autosave coverage", () => {
     expect(delays).toEqual([10_000]);
     expect(sentTexts).toEqual([{ target: "work:tile-1", text: "/rrr" }]);
     expect(hostExecCalls).toEqual([
-      "tmux display-message -t 'work:tile-1' -p '#{pane_current_command}\t#{pane_current_path}'",
+      "tmux display-message -t 'work:tile-1' -p '#{pane_current_path}'",
       "git -C '/repo/worktree' add -A",
       "git -C '/repo/worktree' commit -m 'chore: auto-save before done'",
       "git -C '/repo/worktree' push",
@@ -160,9 +171,10 @@ describe("done autosave coverage", () => {
     expect(output).toContain("pushed to remote");
   });
 
-  test("autoSave uses $rrr for omx command panes", async () => {
+  test("autoSave uses $rrr for omx-engine windows", async () => {
+    fleetEngine = "omx";
     hostExecHandler = (command) => {
-      if (command.includes("pane_current_path")) return "omx\t/repo/worktree\n";
+      if (command.includes("pane_current_path")) return "/repo/worktree\n";
       return "";
     };
 
@@ -181,7 +193,9 @@ describe("done autosave coverage", () => {
     const cwdOutput = await captureConsole(() => autoSave("tile-1", "work", { dryRun: true }));
     expect(cwdOutput).toContain("would send /rrr to work:tile-1");
     expect(cwdOutput).toContain("would git add + commit + push in /repo/worktree");
-    expect(cwdOutput).toContain("would kill window work:tile-1");
+    // kill-window / worktree removal previews are cmdDone's concern now — the
+    // autosave dry-run no longer claims them (see the NOTE in done-autosave.ts).
+    expect(cwdOutput).not.toContain("would kill window");
     expect(sentTexts).toEqual([]);
     expect(reunionCalls).toEqual([]);
     expect(soulSyncCalls).toEqual([]);
@@ -189,7 +203,7 @@ describe("done autosave coverage", () => {
     hostExecCalls = [];
     hostExecHandler = () => { throw new Error("pane missing"); };
     const missingOutput = await captureConsole(() => autoSave("tile-1", "work", { dryRun: true }));
-    expect(hostExecCalls).toEqual(["tmux display-message -t 'work:tile-1' -p '#{pane_current_command}\t#{pane_current_path}'"]);
+    expect(hostExecCalls).toEqual(["tmux display-message -t 'work:tile-1' -p '#{pane_current_path}'"]);
     expect(missingOutput).toContain("would send /rrr to work:tile-1");
     expect(missingOutput).not.toContain("would git add + commit + push");
   });
@@ -198,7 +212,7 @@ describe("done autosave coverage", () => {
     sendTextError = new Error("agent missing");
     soulSyncError = new Error("no peers");
     hostExecHandler = (command) => {
-      if (command.includes("pane_current_path")) return "bash\t/repo/worktree\n";
+      if (command.includes("pane_current_path")) return "/repo/worktree\n";
       if (command.includes(" commit ")) throw new Error("nothing to save");
       if (command.endsWith(" push")) throw new Error("denied");
       return "";
@@ -220,7 +234,7 @@ describe("done autosave coverage", () => {
 
   test("autoSave reports git add failures and skips git entirely when pane cwd is unavailable", async () => {
     hostExecHandler = (command) => {
-      if (command.includes("pane_current_path")) return "bash\t/repo/worktree\n";
+      if (command.includes("pane_current_path")) return "/repo/worktree\n";
       if (command.endsWith(" add -A")) throw new Error("add failed");
       return "";
     };
@@ -243,7 +257,7 @@ describe("done autosave coverage", () => {
     const noPaneOutput = await captureConsole(async () => {
       await withImmediateTimers(() => autoSave("tile-2", "work", {}));
     });
-    expect(hostExecCalls).toEqual(["tmux display-message -t 'work:tile-2' -p '#{pane_current_command}\t#{pane_current_path}'"]);
+    expect(hostExecCalls).toEqual(["tmux display-message -t 'work:tile-2' -p '#{pane_current_path}'"]);
     expect(sentTexts).toEqual([{ target: "work:tile-2", text: "/rrr" }]);
     expect(noPaneOutput).not.toContain("git auto-save in");
     expect(reunionCalls).toEqual(["tile-2"]);

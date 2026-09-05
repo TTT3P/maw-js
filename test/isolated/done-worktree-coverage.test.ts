@@ -164,6 +164,8 @@ describe("removeWorktreeViaConfig", () => {
     writeFleetConfig("oracle.json", {
       windows: [{ name: "FeaturePane", repo: "Soul-Brews-Studio/maw-js.wt-123-feature" }],
     });
+    // 8f75d621 containment realpaths the slot; it must exist on disk.
+    mkdirSync(join(REPOS_ROOT, "Soul-Brews-Studio/maw-js.wt-123-feature"), { recursive: true });
 
     hostExecHandler = (command) => {
       if (command.includes("rev-parse --abbrev-ref HEAD")) return "feature/done-cleanup\n";
@@ -199,6 +201,7 @@ describe("removeWorktreeViaConfig", () => {
     writeFleetConfig("oracle.json", {
       windows: [{ name: "FeaturePane", repo: "LegacyOrg/legacy-repo.wt-feature" }],
     });
+    mkdirSync(join(REPOS_ROOT, "StateOrg/state-repo.wt-feature"), { recursive: true });
 
     hostExecHandler = (command) => {
       if (command.includes("rev-parse --abbrev-ref HEAD")) return "main\n";
@@ -213,13 +216,20 @@ describe("removeWorktreeViaConfig", () => {
     expect(hostExecCalls.join("\n")).not.toContain("LegacyOrg/legacy-repo");
   });
 
-  test("returns false after reporting a worktree removal failure", async () => {
+  test("returns false when the clean-orphan fallback removal also fails", async () => {
+    // 4472b8e3 git-dirty guard: after a failed `worktree remove`, a CLEAN
+    // orphan is rm -rf'ed (returns true); the false-return path is the orphan
+    // removal itself failing.
     writeFleetConfig("oracle.json", {
       windows: [{ name: "stuck", repo: "org/repo.wt-stuck" }],
     });
+    mkdirSync(join(REPOS_ROOT, "org/repo.wt-stuck"), { recursive: true });
     hostExecHandler = (command) => {
       if (command.includes("worktree remove")) throw new Error("busy worktree");
-      return "main\n";
+      if (command.includes("status --porcelain")) return "";
+      if (command.startsWith("rm -rf ")) throw new Error("device busy");
+      if (command.includes("rev-parse --abbrev-ref HEAD")) return "main\n";
+      return "";
     };
 
     const output = await captureConsole(async () => {
@@ -227,13 +237,15 @@ describe("removeWorktreeViaConfig", () => {
     });
 
     expect(hostExecCalls.some(command => command.includes("worktree remove"))).toBe(true);
-    expect(output).toContain("worktree remove failed: busy worktree");
+    expect(output).toContain("orphan directory removal failed");
+    expect(output).toContain("busy worktree");
   });
 
   test("fails loud instead of force-removing dirty configured worktrees without --force", async () => {
     writeFleetConfig("oracle.json", {
       windows: [{ name: "dirty", repo: "org/repo.wt-dirty" }],
     });
+    mkdirSync(join(REPOS_ROOT, "org/repo.wt-dirty"), { recursive: true });
     hostExecHandler = (command) => {
       if (command.includes("rev-parse --abbrev-ref HEAD")) return "feature/dirty\n";
       if (command.includes("worktree remove")) throw new Error("fatal: contains modified or untracked files");

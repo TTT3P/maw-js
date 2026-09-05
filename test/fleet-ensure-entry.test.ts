@@ -42,6 +42,7 @@ describe("ensureFleetSessionEntry", () => {
       created_at: "2026-05-28T01:02:03.000Z",
       created_by: "maw wake",
       auto_registered: true,
+      schemaVersion: 2,
       windows: [{ name: "mawjs-oracle", repo: "github.com/Soul-Brews-Studio/maw-js" }],
     });
   });
