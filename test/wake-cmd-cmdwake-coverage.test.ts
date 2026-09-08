@@ -1696,7 +1696,7 @@ describe("cmdWake main-suite coverage", () => {
     expect(setSessionEnvCalls).toEqual(["10-mawjs"]);
     expect(sendTextCalls).toContainEqual({
       target: "10-mawjs:mawjs-oracle",
-      text: `cd ${repoPath} && codex --agent mawjs-oracle`,
+      text: `ORACLE_SEAT='mawjs' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && codex --agent mawjs-oracle`,
     });
     expect(newWindowCalls).toContainEqual({
       session: "10-mawjs",
@@ -1734,7 +1734,7 @@ describe("cmdWake main-suite coverage", () => {
     expect(setSessionEnvCalls).toEqual(["63-mawjs"]);
     expect(sendTextCalls).toContainEqual({
       target: "63-mawjs:mawjs-oracle",
-      text: `cd ${repoPath} && codex --agent mawjs-oracle`,
+      text: `ORACLE_SEAT='mawjs' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && codex --agent mawjs-oracle`,
     });
     expect(attachCalls).toEqual(["63-mawjs"]);
   });
@@ -1810,7 +1810,7 @@ describe("cmdWake main-suite coverage", () => {
     expect(ensureSessionRunningCalls).toEqual(["54-mawjs"]);
     expect(sendTextCalls).toContainEqual({
       target: "54-mawjs:mawjs-oracle",
-      text: `cd ${repoPath} && codex --agent mawjs-oracle`,
+      text: `ORACLE_SEAT='mawjs' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && codex --agent mawjs-oracle`,
     });
     expect(restoreTabOrderCalls).toEqual(["54-mawjs"]);
     expect(takeSnapshotCalls).toEqual(["wake"]);
@@ -1948,7 +1948,7 @@ describe("cmdWake main-suite coverage", () => {
       "-k",
       "-t",
       "54-mawjs:mawjs-oracle",
-      `cd ${repoPath} && thclaws --agent mawjs-oracle`,
+      `ORACLE_SEAT='mawjs' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && thclaws --agent mawjs-oracle`,
     ]);
     expect(logs.join("\n")).toContain("switching engine to thclaws");
   });
@@ -1964,7 +1964,7 @@ describe("cmdWake main-suite coverage", () => {
     expect(sendTextCalls).toEqual([
       {
         target: "54-mawjs:mawjs-oracle",
-        text: `cd ${repoPath} && codex --agent mawjs-oracle`,
+        text: `ORACLE_SEAT='mawjs' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && codex --agent mawjs-oracle`,
       },
     ]);
     expect(maybeSplitCalls).toEqual([

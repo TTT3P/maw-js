@@ -681,7 +681,7 @@ async function restoreSnapshotWindows(
   }
   for (const win of planned) {
     await tmux.newWindow(session, win.windowName, { cwd: win.cwd });
-    await tmux.sendText(`${session}:${win.windowName}`, buildWakeCommand(win.windowName, win.cwd, { engine }));
+    await tmux.sendText(`${session}:${win.windowName}`, buildWakeCommand(win.windowName, win.cwd, { engine, oracleSeat: win.cwd === repoPath ? oracle : undefined }));
     existingWindows.add(win.windowName);
     const label = win.source === "worktree" ? "worktree" : "repo";
     console.log(`\x1b[36m↻\x1b[0m snapshot window: ${win.windowName}  \x1b[90m${label}: ${win.cwd} (from snapshot)\x1b[0m`);
@@ -1745,7 +1745,7 @@ export async function cmdWake(oracle: string, opts: WakeOptions): Promise<string
       registerWorktreeWindow(existingWindow);
       if (opts.prompt) {
         await tmux.selectWindow(target);
-        const wakeCommand = buildWakeCommand(existingWindow, targetPath, opts);
+        const wakeCommand = buildWakeCommand(existingWindow, targetPath, { ...opts, oracleSeat: oracle });
         if (opts.engine) {
           if (!(await respawnPaneWithCommand(target, wakeCommand))) {
             await sendWakeCommandAndPrompt(target, opts.prompt, wakeCommand, opts.engine);
@@ -1768,7 +1768,7 @@ export async function cmdWake(oracle: string, opts: WakeOptions): Promise<string
 
       if (!agentAlive) {
         console.log(`\x1b[33m⚡\x1b[0m '${existingWindow}' in ${session} — agent dead, re-launching fresh...`);
-        await tmux.sendText(target, buildWakeCommand(existingWindow, targetPath, { ...opts, freshLaunch: true }));
+        await tmux.sendText(target, buildWakeCommand(existingWindow, targetPath, { ...opts, freshLaunch: true, oracleSeat: oracle }));
         if (opts.wait) await wakeSession.waitForEngine(target, getPaneInfos, isAgentCommand);
         if (opts.attach) {
           await tmux.selectWindow(target);
@@ -1782,7 +1782,7 @@ export async function cmdWake(oracle: string, opts: WakeOptions): Promise<string
 
       if (opts.engine) {
         console.log(`\x1b[33m⚡\x1b[0m '${existingWindow}' in ${session} — switching engine to ${opts.engine}...`);
-        const command = buildWakeCommand(existingWindow, targetPath, opts);
+        const command = buildWakeCommand(existingWindow, targetPath, { ...opts, oracleSeat: oracle });
         if (!(await respawnPaneWithCommand(target, command))) {
           await tmux.sendText(target, command);
         }
