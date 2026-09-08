@@ -482,6 +482,10 @@ function isAttachOnlyWake(opts: WakeOptions): boolean {
 export type WakeCommandOptions = Pick<WakeOptions, "engine" | "parentSessionId" | "sessionId" | "channels" | "freshSession"> & {
   /** Strip engine resume/continue placeholders for reboot-rehydrated dead panes (#2391). */
   freshLaunch?: boolean;
+  /** Logical seat name (the `maw wake <arg>`). When set, the seat's owning repo
+   *  (the launch cwd) rides along as ORACLE_MEMORY_OWNER_ROOT and the name as
+   *  ORACLE_SEAT — bound at the single writer that knows the seat's identity. */
+  oracleSeat?: string;
 };
 
 export function buildWakeCommand(windowName: string, cwd: string, opts: WakeCommandOptions): string {
@@ -495,7 +499,16 @@ export function buildWakeCommand(windowName: string, cwd: string, opts: WakeComm
       : opts.engine;
   return prefixCommandWithSpawnSessionEnv(
     buildCommandInDir(windowName, cwd, commandOpts),
-    { explicit: opts.parentSessionId, sessionId: opts.sessionId, cwd },
+    {
+      explicit: opts.parentSessionId,
+      sessionId: opts.sessionId,
+      cwd,
+      // Only the seat-identified path (the main owner window) carries the seat
+      // name + owner root; worktree/child windows leave them unset so a
+      // delegate body never receives an owner root it doesn't own.
+      oracleSeat: opts.oracleSeat,
+      memoryOwnerRoot: opts.oracleSeat ? cwd : undefined,
+    },
   );
 }
 
@@ -1462,7 +1475,12 @@ export async function cmdWake(oracle: string, opts: WakeOptions): Promise<string
     // this cwd are the live owner's — a fresh work session in an owner's repo
     // must not launch the --continue form (it would fork the owner's
     // conversation). Computed once; the retry step must stay deterministic.
-    const mainLaunchOpts = await forceFreshIfOwnerLiveInCwd(opts, repoPath, sessionContext.mode);
+    const mainLaunchOpts = {
+      ...(await forceFreshIfOwnerLiveInCwd(opts, repoPath, sessionContext.mode)),
+      // Bind the owner seat's identity + memory root at the writer that knows
+      // both (the resolved oracle name and its repoPath).
+      oracleSeat: oracle,
+    };
     await tmux.newSession(session, { window: mainWindowName, cwd: repoPath });
     await retryFreshSessionTmuxStep(session, "set session environment", () => setSessionEnv(session), {
       hasSession: tmux.hasSession,

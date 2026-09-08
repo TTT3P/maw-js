@@ -10,6 +10,12 @@ export interface ResolveParentSessionIdInput {
 
 export interface SpawnSessionEnvInput extends ResolveParentSessionIdInput {
   sessionId?: string;
+  /** Logical seat name (the `maw wake <arg>`), forwarded as ORACLE_SEAT for
+   *  seat-level probing. Never a session/pane id. */
+  oracleSeat?: string;
+  /** The seat's owning repo root, forwarded as ORACLE_MEMORY_OWNER_ROOT so the
+   *  child's Oracle writes are bound to the owner (not an inherited/default root). */
+  memoryOwnerRoot?: string;
 }
 
 function cleanSessionId(value: unknown): string | undefined {
@@ -57,6 +63,10 @@ export function spawnSessionEnv(input: SpawnSessionEnvInput = {}): Record<string
   const sessionId = cleanSessionId(input.sessionId);
   if (parent) env.MAW_PARENT_SESSION_ID = parent;
   if (sessionId) env.MAW_SESSION_ID = sessionId;
+  const oracleSeat = input.oracleSeat?.trim();
+  const memoryOwnerRoot = input.memoryOwnerRoot?.trim();
+  if (oracleSeat) env.ORACLE_SEAT = oracleSeat;
+  if (memoryOwnerRoot) env.ORACLE_MEMORY_OWNER_ROOT = memoryOwnerRoot;
   return env;
 }
 

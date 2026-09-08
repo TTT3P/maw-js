@@ -76,4 +76,24 @@ describe("parent session resolution", () => {
       env: {} as NodeJS.ProcessEnv,
     })).toBe("MAW_PARENT_SESSION_ID='parent 1' MAW_SESSION_ID='child'\\''1' claude");
   });
+
+  test("forwards ORACLE_SEAT and ORACLE_MEMORY_OWNER_ROOT when the seat identity is known", () => {
+    expect(spawnSessionEnv({
+      oracleSeat: "erpproject",
+      memoryOwnerRoot: "/Users/x/tt3p/ghq/github.com/TTT3P/erpproject-oracle",
+      env: {} as NodeJS.ProcessEnv,
+    })).toEqual({
+      ORACLE_SEAT: "erpproject",
+      ORACLE_MEMORY_OWNER_ROOT: "/Users/x/tt3p/ghq/github.com/TTT3P/erpproject-oracle",
+    });
+  });
+
+  test("omits the seat vars when unset or blank (no regression for non-owner windows)", () => {
+    expect(spawnSessionEnv({ env: {} as NodeJS.ProcessEnv })).toEqual({});
+    expect(spawnSessionEnv({
+      oracleSeat: "  ",
+      memoryOwnerRoot: "",
+      env: {} as NodeJS.ProcessEnv,
+    })).toEqual({});
+  });
 });
