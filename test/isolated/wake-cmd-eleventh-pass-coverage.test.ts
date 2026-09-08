@@ -318,7 +318,7 @@ describe("wake-cmd eleventh-pass isolated coverage", () => {
     ]);
     expect(sentText).toContainEqual({
       target: "10-neo:neo-oracle",
-      text: `cd ${repoPath} && claude --agent neo-oracle`,
+      text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && claude --agent neo-oracle`,
     });
     expect(sentText).toContainEqual({
       target: "10-neo:neo-snap",

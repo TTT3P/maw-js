@@ -249,7 +249,7 @@ describe("wake-cmd twelfth-pass isolated coverage", () => {
     expect(result).toBe("54-neo:neo-2-oracle");
     expect(sentText).toContainEqual({
       target: "54-neo:neo-2-oracle",
-      text: `cd ${repoPath} && claude --agent neo-2-oracle`,
+      text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && claude --agent neo-2-oracle`,
     });
     expect(selectedWindows).toEqual(["54-neo:neo-2-oracle"]);
     expect(attachCalls).toEqual(["54-neo"]);

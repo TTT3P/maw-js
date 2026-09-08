@@ -681,7 +681,7 @@ async function restoreSnapshotWindows(
   }
   for (const win of planned) {
     await tmux.newWindow(session, win.windowName, { cwd: win.cwd });
-    await tmux.sendText(`${session}:${win.windowName}`, buildWakeCommand(win.windowName, win.cwd, { engine, oracleSeat: win.cwd === repoPath ? oracle : undefined }));
+    await tmux.sendText(`${session}:${win.windowName}`, buildWakeCommand(win.windowName, win.cwd, { engine }));
     existingWindows.add(win.windowName);
     const label = win.source === "worktree" ? "worktree" : "repo";
     console.log(`\x1b[36m↻\x1b[0m snapshot window: ${win.windowName}  \x1b[90m${label}: ${win.cwd} (from snapshot)\x1b[0m`);
