@@ -39,4 +39,16 @@ describe("buildWakeCommand wiring: freshSession routes exactly like freshLaunch"
     expect(a).toBe(b);
     expect(a).toContain("--continue");
   });
+
+  test("an owner seat rides ORACLE_SEAT + ORACLE_MEMORY_OWNER_ROOT (=launch cwd)", () => {
+    const line = buildWakeCommand("erpproject-oracle", "/repos/erpproject-oracle", { oracleSeat: "erpproject" });
+    expect(line).toContain("ORACLE_SEAT='erpproject'");
+    expect(line).toContain("ORACLE_MEMORY_OWNER_ROOT='/repos/erpproject-oracle'");
+  });
+
+  test("a window with no seat identity carries neither var (delegate/worktree body)", () => {
+    const line = buildWakeCommand("w", "/repos/x", {});
+    expect(line).not.toContain("ORACLE_SEAT=");
+    expect(line).not.toContain("ORACLE_MEMORY_OWNER_ROOT=");
+  });
 });

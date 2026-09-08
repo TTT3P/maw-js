@@ -752,7 +752,7 @@ describe("wake-cmd thirteenth-pass isolated coverage", () => {
     ]);
     expect(sentText).toContainEqual({
       target: "04-neo:neo-oracle",
-      text: `cd ${repoPath} && claude --agent neo-oracle`,
+      text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && claude --agent neo-oracle`,
     });
     expect(sentText).toContainEqual({
       target: "04-neo:neo-restored",
@@ -784,7 +784,7 @@ describe("wake-cmd thirteenth-pass isolated coverage", () => {
     expect(result).toBe("04-neo:neo-oracle");
     expect(sentText).toContainEqual({
       target: "04-neo:neo-oracle",
-      text: `cd ${repoPath} && claude --agent neo-oracle --continue`,
+      text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && claude --agent neo-oracle --continue`,
     });
     expect(sentText).toContainEqual({
       target: "04-neo:neo-beta",
@@ -800,7 +800,7 @@ describe("wake-cmd thirteenth-pass isolated coverage", () => {
 
     expect(result).toBe("54-neo:neo-oracle");
     expect(respawnCalls).toEqual([
-      ["respawn-pane", "-k", "-t", "54-neo:neo-oracle", `cd ${repoPath} && claude --agent neo-oracle`],
+      ["respawn-pane", "-k", "-t", "54-neo:neo-oracle", `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && claude --agent neo-oracle`],
     ]);
     expect(sentText).toEqual([]);
     expect(selectedWindows).toEqual(["54-neo:neo-oracle"]);
@@ -821,7 +821,7 @@ describe("wake-cmd thirteenth-pass isolated coverage", () => {
     expect(sentText).toEqual([
       {
         target: "54-neo:neo-oracle",
-        text: `cd ${repoPath} && claude --agent neo-oracle`,
+        text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && claude --agent neo-oracle`,
       },
       {
         target: "54-neo:neo-oracle",
@@ -840,7 +840,7 @@ describe("wake-cmd thirteenth-pass isolated coverage", () => {
     expect(result).toBe("54-neo:neo-oracle");
     expect(sentText).toEqual([{
       target: "54-neo:neo-oracle",
-      text: `cd ${repoPath} && claude --agent neo-oracle`,
+      text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && claude --agent neo-oracle`,
     }]);
     expect(respawnCalls).toEqual([]);
   });
@@ -853,7 +853,7 @@ describe("wake-cmd thirteenth-pass isolated coverage", () => {
     expect(result).toBe("54-neo:neo-oracle");
     expect(sentText).toEqual([{
       target: "54-neo:neo-oracle",
-      text: `cd ${repoPath} && codex --agent neo-oracle`,
+      text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && codex --agent neo-oracle`,
     }]);
     expect(respawnCalls).toContainEqual(["send-keys", "-t", "54-neo:neo-oracle", "plain 'prompt'", "Enter"]);
   });
@@ -1014,7 +1014,7 @@ describe("wake-cmd thirteenth-pass isolated coverage", () => {
     expect(result).toBe("54-neo:neo-oracle");
     expect(sentText).toContainEqual({
       target: "54-neo:neo-oracle",
-      text: `cd ${repoPath} && codex --agent neo-oracle`,
+      text: `ORACLE_SEAT='neo' ORACLE_MEMORY_OWNER_ROOT='${repoPath}' cd ${repoPath} && codex --agent neo-oracle`,
     });
     expect(selectedWindows).toEqual(["54-neo:neo-oracle"]);
     expect(attachCalls).toEqual(["54-neo"]);
