@@ -81,6 +81,10 @@ let curlFetchHandler: (url: string, options: any) => CurlResult | Promise<CurlRe
 let runHookCalls: Array<{ name: string; payload: any }>;
 let logMessageCalls: Array<{ from: string; to: string; message: string; route: string }>;
 let emitFeedCalls: Array<{ event: string; oracle: string; host: string; message: string; port: number; data: any }>;
+// item2 F2: control emitFeed timing so tests can prove the exit-path AWAIT.
+// "sync" records immediately (default); "deferred" records after a tick (only an
+// awaited caller sees it before exit); "hang" never resolves/records (deadline path).
+let emitFeedMode: "sync" | "deferred" | "hang";
 let sleepCalls: number[];
 let plugins: PluginPackage[];
 let invokePluginResult: { ok: boolean; output?: string; error?: string };
@@ -207,9 +211,13 @@ mock.module(join(import.meta.dir, "../src/commands/shared/comm-log-feed"), () =>
     if (!mockActive) return realFeed.logMessage(from, to, message, route);
     logMessageCalls.push({ from, to, message, route });
   },
-  emitFeed: (event: string, oracle: string, host: string, message: string, port: number, data: any) => {
-    if (!mockActive) return realFeed.emitFeed(event, oracle, host, message, port, data);
-    emitFeedCalls.push({ event, oracle, host, message, port, data });
+  emitFeed: (event: string, oracle: string, host: string, message: string, port: number, data: any, timeoutMs?: number) => {
+    if (!mockActive) return realFeed.emitFeed(event, oracle, host, message, port, data, timeoutMs);
+    const record = { event, oracle, host, message, port, data };
+    if (emitFeedMode === "hang") return new Promise<void>(() => {}); // never resolves, never records
+    if (emitFeedMode === "deferred") return new Promise<void>((r) => setTimeout(() => { emitFeedCalls.push(record); r(); }, 0));
+    emitFeedCalls.push(record);
+    return undefined as unknown as void;
   },
 }));
 
@@ -356,6 +364,7 @@ beforeEach(() => {
   runHookCalls = [];
   logMessageCalls = [];
   emitFeedCalls = [];
+  emitFeedMode = "sync";
   sleepCalls = [];
   plugins = [];
   invokePluginResult = { ok: true, output: "plugin ok" };
@@ -812,6 +821,76 @@ describe("cmdSend — delivery branch coverage", () => {
     expect(logs.join("\n")).toContain("queued");
     expect(logs.join("\n")).not.toContain("delivered");
     expect(runHookCalls[0].name).toBe("after_send");
+  });
+
+  // --- item2 F2: fail-branch must record exactly one 'failed' row BEFORE exit ---
+  test("item2 F2: peer send failure records exactly one 'failed' row before exit", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "receiver 502" } }); // fault injection
+    await runCmd(() => cmdSend("remote:session:oracle", "boom"));
+    expect(exitCode).toBe(1);
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed");
+    expect(failed).toHaveLength(1); // exactly one, and reached before the mocked process.exit threw
+    expect(failed[0].data.route).toBe("peer");
+    expect(failed[0].data.direction).toBe("outbound");
+    expect(failed[0].data.text).toBe("[test-node:sender] boom");
+  });
+
+  test("item2 F2: cross-node --inbox failure records one 'failed' row before exit (the reproduced gap)", async () => {
+    resolveTargetReturn = { type: "peer", target: "gordon", node: "win", peerUrl: "http://win:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "inbox unwritable" } });
+    await runCmd(() => cmdSend("win:gordon", "x", false, { inboxOnly: true }));
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(curlFetchCalls[0].options.body)).toMatchObject({ inbox: true });
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed");
+    expect(failed).toHaveLength(1); // before this fix: 0 (fire-and-forget emit killed by process.exit)
+    expect(failed[0].data.route).toBe("peer");
+  });
+
+  test("item2 F2: successful peer send still records exactly one row (no duplicate)", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: true, status: 200, data: { ok: true, target: "remote:oracle.0", state: "delivered", lastLine: "ack" } });
+    await runCmd(() => cmdSend("remote:session:oracle", "ok"));
+    expect(exitCode).toBeUndefined();
+    expect(emitFeedCalls.filter(f => f.data?.text === "[test-node:sender] ok")).toHaveLength(1);
+  });
+
+  // Deferred emitFeed proves the AWAIT (not just the emit): the row is only
+  // recorded after a tick, so code that does NOT await before process.exit loses
+  // it. These FAIL on the pre-fix (fire-and-forget) code and PASS with the await.
+  test("item2 F2: peer failure — DEFERRED feed row still lands before exit (proves await)", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "receiver 502" } });
+    emitFeedMode = "deferred"; // row pushed on a later tick — only an awaited caller sees it
+    await runCmd(() => cmdSend("remote:session:oracle", "boom"));
+    expect(exitCode).toBe(1);
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed" && f.data?.route === "peer");
+    expect(failed).toHaveLength(1);
+  });
+
+  test("item2 F2: discovery failure — DEFERRED feed row still lands before exit (proves await)", async () => {
+    resolveTargetReturn = null;
+    findPeerUrl = "http://discovered:3456";
+    curlFetchHandler = () => ({ ok: false, status: 502, data: {} });
+    emitFeedMode = "deferred";
+    await runCmd(() => cmdSend("path/target", "boom"));
+    expect(exitCode).toBe(1);
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed" && f.data?.route === "discovery");
+    expect(failed).toHaveLength(1);
+  });
+
+  test("item2 F2: a stalled daemon does NOT drag the exit — bounded deadline honored", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "receiver 502" } });
+    emitFeedMode = "hang"; // feed never resolves — the deadline must release the exit
+    process.env.MAW_FEED_FLUSH_MS = "30";
+    const t0 = Date.now();
+    await runCmd(() => cmdSend("remote:session:oracle", "boom"));
+    const elapsed = Date.now() - t0;
+    delete process.env.MAW_FEED_FLUSH_MS;
+    expect(exitCode).toBe(1);           // still exits with the original error code
+    expect(elapsed).toBeLessThan(1000); // not dragged by the never-resolving feed
+    expect(errs.join("\n")).toContain("Remote fetch failed"); // error surfaced regardless
   });
 
   test("peer delivery uses explicit sender override for message body and v3 from-signing", async () => {

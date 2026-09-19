@@ -10,7 +10,7 @@ import { Tmux } from "../../core/transport/tmux";
 import { AmbiguousMatchError } from "../../core/runtime/find-window";
 import { detectWindowMismatch } from "../../core/routing";
 import { loadConfig, cfgLimit } from "../../config";
-import { logMessage, emitFeed } from "./comm-log-feed";
+import { logMessage, emitFeed, flushWithDeadline } from "./comm-log-feed";
 import { buildMessageLifecycleFeedEvent, type MessageLifecycleInput } from "../../lib/message-events";
 import {
   defaultReceiverInboxWriter,
@@ -262,9 +262,21 @@ export function formatSignedMessage(
   return `${leading}[${node}:${senderName}] ${body}`;
 }
 
-function emitMessageFeed(input: MessageLifecycleInput, port: number) {
+// Returns the feed POST promise so exit-adjacent fail branches can await the
+// ledger write before process.exit (item2 F2). Happy-path callers ignore it.
+// timeoutMs (exit-adjacent only) self-aborts the request.
+function emitMessageFeed(input: MessageLifecycleInput, port: number, timeoutMs?: number): Promise<void> {
   const event = buildMessageLifecycleFeedEvent(input);
-  emitFeed(event.event, event.oracle, event.host, event.message, port, event.data);
+  return emitFeed(event.event, event.oracle, event.host, event.message, port, event.data, timeoutMs);
+}
+
+// item2 F2: bounded best-effort feed flush before a process.exit on an error
+// path. The record is attempted, but a stalled daemon never drags the exit past
+// this deadline. Overridable for tests via MAW_FEED_FLUSH_MS.
+const FEED_FLUSH_DEADLINE_MS = 1500;
+function feedFlushMs(): number {
+  const v = Number(process.env.MAW_FEED_FLUSH_MS);
+  return Number.isFinite(v) && v > 0 ? v : FEED_FLUSH_DEADLINE_MS;
 }
 
 /**
@@ -1143,21 +1155,27 @@ export async function cmdSend(
       return;
     }
     const underlying = res.data?.error || (res.status ? `HTTP ${res.status}` : "connection failed");
-    emitMessageFeed({
-      direction: "outbound",
-      state: "failed",
-      channel: "hey",
-      route: "peer",
-      from: senderIdentity.display,
-      to: `${result.node}:${result.target}`,
-      target: result.target,
-      peerUrl: result.peerUrl,
-      text: outboundMessage,
-      error: underlying,
-      signed: true,
-    }, config.port || 3456);
+    // Surface the error FIRST so a stalled daemon can never delay what the user
+    // sees; then record the failed row before exit, but bounded (item2 F2 +
+    // Riddler review: no fire-and-forget on exit, no unbounded await either).
     console.error(`\x1b[31merror\x1b[0m: Remote fetch failed for peer ${result.peerUrl} (${result.node}): ${underlying}`);
     console.error(`\x1b[33mhint\x1b[0m:  check peer connectivity: maw health`);
+    {
+      const ms = feedFlushMs();
+      await flushWithDeadline(emitMessageFeed({
+        direction: "outbound",
+        state: "failed",
+        channel: "hey",
+        route: "peer",
+        from: senderIdentity.display,
+        to: `${result.node}:${result.target}`,
+        target: result.target,
+        peerUrl: result.peerUrl,
+        text: outboundMessage,
+        error: underlying,
+        signed: true,
+      }, config.port || 3456, ms), ms);
+    }
     process.exit(1);
   }
 
@@ -1214,21 +1232,25 @@ export async function cmdSend(
     // Remote fetch was attempted but failed — surface the remote failure explicitly (#411).
     // Never fall through to "not found in local sessions" when the real problem is network.
     const underlying = res.data?.error || (res.status ? `HTTP ${res.status}` : "connection failed");
-    emitMessageFeed({
-      direction: "outbound",
-      state: "failed",
-      channel: "hey",
-      route: "discovery",
-      from: senderIdentity.display,
-      to: query,
-      target: query,
-      peerUrl,
-      text: outboundMessage,
-      error: underlying,
-      signed: true,
-    }, config.port || 3456);
+    // item2 F2: error first, then bounded failed-row flush before exit (see peer branch).
     console.error(`\x1b[31merror\x1b[0m: Remote fetch failed for peer ${peerUrl}: ${underlying}`);
     console.error(`\x1b[33mhint\x1b[0m:  check peer connectivity: maw health`);
+    {
+      const ms = feedFlushMs();
+      await flushWithDeadline(emitMessageFeed({
+        direction: "outbound",
+        state: "failed",
+        channel: "hey",
+        route: "discovery",
+        from: senderIdentity.display,
+        to: query,
+        target: query,
+        peerUrl,
+        text: outboundMessage,
+        error: underlying,
+        signed: true,
+      }, config.port || 3456, ms), ms);
+    }
     process.exit(1);
   }
 
