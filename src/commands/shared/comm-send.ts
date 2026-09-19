@@ -26,6 +26,46 @@ import { runPluginEventHooks } from "../../plugin/event-hooks";
 import { notifyLiveInboxReceiver } from "./live-inbox-notify";
 
 /**
+ * F3 (hey truncation class, 2026-09-19 · receipt fix-hey-truncation): the safe
+ * single-line cap for RAW pane injection. A single line pasted into a receiver's
+ * line-input is silently dropped once it reaches the OS cooked-mode canonical
+ * limit (macOS/BSD MAX_CANON = 1024 — reproduced) or a TUI's own paste cap
+ * (~2000, observed). We cannot reliably detect the receiver's input mode, so we
+ * route by this BYTE budget OR any CR/LF (see shouldAutoRouteToInbox) rather
+ * than chunk. 900 is a conservative constant of BYTES below the 1024-byte floor.
+ * The budget is bytes, not UTF-16 units: 400 Thai chars are 416 units but ~1216
+ * bytes, so a UTF-16 count would leave ordinary Thai text on the unsafe raw path
+ * (Riddler HIGH, review 2026-09-19).
+ */
+export const HEY_PANE_SAFE_CAP = 900;
+
+/**
+ * F2 routing decision: long OR multiline text must never be pane-injected raw
+ * (long → dropped at the receiver line cap = 1a; embedded newline → each line
+ * submits separately = 1b). The full message is always persisted to the
+ * receiver inbox first (#1967), so routing loses nothing. `--inbox` is a
+ * persist-only contract and keeps its existing path unchanged.
+ */
+export function shouldAutoRouteToInbox(text: string, inboxOnly: boolean): boolean {
+  if (inboxOnly) return false;
+  // BYTE budget (not UTF-16 .length): the receiver line cap counts bytes, so
+  // multi-byte scripts (Thai/CJK/emoji) must be measured in UTF-8. Any CR or LF
+  // is a submit boundary at the receiver (CR-only fragments too — Riddler MED).
+  return Buffer.byteLength(text, "utf8") >= HEY_PANE_SAFE_CAP || /[\r\n]/.test(text);
+}
+
+/**
+ * F2 pointer: the single short line injected into the pane in place of the
+ * long/multiline body. Whitespace is collapsed so the pointer itself can never
+ * carry a newline (which would re-introduce 1b).
+ */
+export function buildInboxPointer(fromDisplay: string, text: string, filename: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  const preview = oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+  return `[${fromDisplay}] ${preview} · full: ψ/inbox/${filename} (maw inbox)`;
+}
+
+/**
  * Resolve a `session:window` target to a specific pane running an agent
  * (claude / codex / node). Fixes the multi-pane routing bug: when an oracle
  * window has multiple panes (e.g., team-agents split beside it), tmux's
@@ -932,6 +972,56 @@ export async function cmdSend(
     // injection is only the live wake-up. Persist first so a tmux race cannot
     // silently drop the message before it reaches ψ/inbox.
     const inbox = await writeReceiverInbox(target);
+    const wantedAutoRoute = shouldAutoRouteToInbox(outboundMessage, false);
+
+    // F2 (hey truncation class): never pane-inject long or multiline text raw.
+    // The receiver's line-input drops >=~1024-char lines (cooked MAX_CANON) and
+    // treats embedded newlines as separate submits (fragmentation). The full
+    // body is already durably in the inbox (above), so inject only a short
+    // pointer line and auto-submit that. `--inbox` is handled earlier, untouched.
+    if (wantedAutoRoute && inbox?.ok) {
+      // Use the raw message for the preview — outboundMessage already carries
+      // the [from] prefix, and buildInboxPointer adds its own.
+      const pointer = buildInboxPointer(senderIdentity.display, message, inbox.filename);
+      try {
+        await sendKeys(target, pointer);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // Pointer failed, but the full text is already in the inbox — report
+        // queued rather than losing anything.
+        if (logQueuedInbox(inbox, target, `auto-routed (long/multiline); pointer injection failed: ${msg}`)) {
+          await notifyQueuedInbox(inbox, target, "auto-routed; pointer injection failed");
+          return;
+        }
+        console.error(`\x1b[31merror\x1b[0m: pointer injection failed for ${target}: ${msg}`);
+        process.exit(1);
+      }
+      if (!opts.noVerifySubmit && process.env.MAW_TEST_MODE !== "1") {
+        const verify = await verifySubmitDelivered(target, pointer);
+        if (verify.warning) console.log(`  \x1b[33m⚠\x1b[0m ${verify.warning}`);
+      }
+      await runHook("after_send", { to: query, message: outboundMessage });
+      if (!config.node) throw new Error("config.node is required — set 'node' in maw.config.json");
+      logMessage(senderName, query, outboundMessage, "inbox");
+      emitMessageFeed({
+        direction: "outbound",
+        state: "queued",
+        channel: "hey",
+        route: "inbox-auto",
+        from: senderIdentity.display,
+        to: query,
+        target,
+        text: outboundMessage,
+        lastLine: "auto-routed (long/multiline); pointer injected to pane",
+        signed: true,
+      }, config.port || 3456);
+      // F4 — output shows the route taken so senders learn the behavior.
+      const why = /[\r\n]/.test(outboundMessage) ? "multiline" : `≥${HEY_PANE_SAFE_CAP} bytes`;
+      console.log(`\x1b[33mqueued (inbox, auto-routed: ${why})\x1b[0m → ${inbox.oracle} ψ/inbox/${inbox.filename}`);
+      console.log(`\x1b[90m  ⤷ pane pointer: ${pointer}\x1b[0m`);
+      return;
+    }
+
     try {
       await sendKeys(target, outboundMessage);
     } catch (error) {
@@ -974,7 +1064,14 @@ export async function cmdSend(
       lastLine,
       signed: true,
     }, config.port || 3456);
-    console.log(`\x1b[32mdelivered\x1b[0m → ${target}: ${outboundMessage}`);
+    // F4 — when auto-route was wanted (long/multiline) but the receiver inbox
+    // was unavailable, we fell back to raw pane injection; label the route
+    // 'raw (fallback)' + warn so the operator sees the still-risky path taken.
+    const paneRoute = wantedAutoRoute ? "raw (fallback)" : "pane";
+    console.log(`\x1b[32mdelivered (${paneRoute})\x1b[0m → ${target}: ${outboundMessage}`);
+    if (wantedAutoRoute) {
+      console.log(`  \x1b[33m⚠\x1b[0m auto-route wanted (long/multiline) but receiver inbox unavailable — sent raw; text may truncate at the receiver line cap`);
+    }
     if (lastLine) console.log(`\x1b[90m  ⤷ ${lastLine.slice(0, cfgLimit("messageTruncate"))}\x1b[0m`);
     await runPluginEventHooks("transport:after_send", {
       event: "transport:after_send",

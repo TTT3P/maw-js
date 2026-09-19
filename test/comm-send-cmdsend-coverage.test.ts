@@ -521,6 +521,94 @@ describe("cmdSend — delivery branch coverage", () => {
     }]);
   });
 
+  // --- Fix: hey truncation class (F2 auto-route), receipt fix-hey-truncation ---
+  const okInbox = () => ({
+    ok: true as const,
+    oracle: "oracle",
+    inboxDir: "/repo/ψ/inbox",
+    path: "/repo/ψ/inbox/msg.md",
+    filename: "msg.md",
+  });
+
+  test("F2: long (>=900) body is auto-routed — pane gets pointer, not raw body", async () => {
+    const body = "x".repeat(1500);
+    await runCmd(() => cmdSend("local:session:oracle", body, false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    // Exactly one pane injection, and it is the SHORT pointer, not the 1500-char body.
+    expect(sendKeysCalls).toHaveLength(1);
+    const injected = sendKeysCalls[0].text;
+    expect(injected.length).toBeLessThan(900);
+    expect(injected.includes("\n")).toBe(false);
+    expect(injected).toContain("full: ψ/inbox/msg.md");
+    expect(injected).not.toBe(`[test-node:sender] ${body}`);
+    // F4 output shows the route taken; feed state is queued/inbox-auto.
+    expect(logs.join("\n")).toContain("auto-routed: ≥900 bytes");
+    expect(logs.join("\n")).not.toContain("delivered (pane)");
+    expect(emitFeedCalls.at(-1)?.data.state).toBe("queued");
+    expect(emitFeedCalls.at(-1)?.data.route).toBe("inbox-auto");
+  });
+
+  test("F2: Thai 400-char body auto-routes on BYTE budget, not UTF-16 (Riddler HIGH)", async () => {
+    const body = "ก".repeat(400); // 400 UTF-16 units < 900, but 1200 UTF-8 bytes
+    await runCmd(() => cmdSend("local:session:oracle", body, false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    expect(sendKeysCalls).toHaveLength(1);
+    expect(sendKeysCalls[0].text).toContain("full: ψ/inbox/msg.md");
+    expect(sendKeysCalls[0].text).not.toBe(`[test-node:sender] ${body}`);
+    expect(logs.join("\n")).toContain("auto-routed: ≥900 bytes");
+  });
+
+  test("F2: CR-only body auto-routes (Riddler MED) — pane pointer has no CR/LF", async () => {
+    await runCmd(() => cmdSend("local:session:oracle", "a\rb", false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    expect(sendKeysCalls).toHaveLength(1);
+    expect(/[\r\n]/.test(sendKeysCalls[0].text)).toBe(false);
+    expect(logs.join("\n")).toContain("auto-routed: multiline");
+  });
+
+  test("F2: multiline body is auto-routed — pane pointer has no newline (closes 1b)", async () => {
+    await runCmd(() => cmdSend("local:session:oracle", "a\nb\nc", false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    expect(sendKeysCalls).toHaveLength(1);
+    expect(sendKeysCalls[0].text.includes("\n")).toBe(false);
+    expect(sendKeysCalls[0].text).toContain("full: ψ/inbox/msg.md");
+    expect(logs.join("\n")).toContain("auto-routed: multiline");
+  });
+
+  test("F2: short single-line body is unchanged — raw pane delivery", async () => {
+    await runCmd(() => cmdSend("local:session:oracle", "hello", false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(sendKeysCalls).toEqual([{ target: "session:oracle.0", text: "[test-node:sender] hello" }]);
+    expect(logs.join("\n")).toContain("delivered (pane)");
+  });
+
+  test("F4: auto-route wanted but inbox unavailable → labeled 'raw (fallback)' + warning", async () => {
+    const body = "x".repeat(1500);
+    await runCmd(() => cmdSend("local:session:oracle", body, false, {
+      receiverInbox: () => ({ ok: false as const, reason: "no repo for raw target" }),
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    // Fell back to raw injection (full body), and the route is labeled + warned.
+    expect(sendKeysCalls).toEqual([{ target: "session:oracle.0", text: `[test-node:sender] ${body}` }]);
+    expect(logs.join("\n")).toContain("delivered (raw (fallback))");
+    expect(logs.join("\n")).toContain("receiver inbox unavailable");
+  });
+
   test("local delivery sends to non-agent panes by default", async () => {
     getPaneCommandReturn = "zsh";
     captureResponses = ["post-send"];
