@@ -81,6 +81,10 @@ let curlFetchHandler: (url: string, options: any) => CurlResult | Promise<CurlRe
 let runHookCalls: Array<{ name: string; payload: any }>;
 let logMessageCalls: Array<{ from: string; to: string; message: string; route: string }>;
 let emitFeedCalls: Array<{ event: string; oracle: string; host: string; message: string; port: number; data: any }>;
+// item2 F2: control emitFeed timing so tests can prove the exit-path AWAIT.
+// "sync" records immediately (default); "deferred" records after a tick (only an
+// awaited caller sees it before exit); "hang" never resolves/records (deadline path).
+let emitFeedMode: "sync" | "deferred" | "hang";
 let sleepCalls: number[];
 let plugins: PluginPackage[];
 let invokePluginResult: { ok: boolean; output?: string; error?: string };
@@ -207,9 +211,13 @@ mock.module(join(import.meta.dir, "../src/commands/shared/comm-log-feed"), () =>
     if (!mockActive) return realFeed.logMessage(from, to, message, route);
     logMessageCalls.push({ from, to, message, route });
   },
-  emitFeed: (event: string, oracle: string, host: string, message: string, port: number, data: any) => {
-    if (!mockActive) return realFeed.emitFeed(event, oracle, host, message, port, data);
-    emitFeedCalls.push({ event, oracle, host, message, port, data });
+  emitFeed: (event: string, oracle: string, host: string, message: string, port: number, data: any, timeoutMs?: number) => {
+    if (!mockActive) return realFeed.emitFeed(event, oracle, host, message, port, data, timeoutMs);
+    const record = { event, oracle, host, message, port, data };
+    if (emitFeedMode === "hang") return new Promise<void>(() => {}); // never resolves, never records
+    if (emitFeedMode === "deferred") return new Promise<void>((r) => setTimeout(() => { emitFeedCalls.push(record); r(); }, 0));
+    emitFeedCalls.push(record);
+    return undefined as unknown as void;
   },
 }));
 
@@ -356,6 +364,7 @@ beforeEach(() => {
   runHookCalls = [];
   logMessageCalls = [];
   emitFeedCalls = [];
+  emitFeedMode = "sync";
   sleepCalls = [];
   plugins = [];
   invokePluginResult = { ok: true, output: "plugin ok" };
@@ -519,6 +528,94 @@ describe("cmdSend — delivery branch coverage", () => {
       message: "[test-node:sender] hello",
       config,
     }]);
+  });
+
+  // --- Fix: hey truncation class (F2 auto-route), receipt fix-hey-truncation ---
+  const okInbox = () => ({
+    ok: true as const,
+    oracle: "oracle",
+    inboxDir: "/repo/ψ/inbox",
+    path: "/repo/ψ/inbox/msg.md",
+    filename: "msg.md",
+  });
+
+  test("F2: long (>=900) body is auto-routed — pane gets pointer, not raw body", async () => {
+    const body = "x".repeat(1500);
+    await runCmd(() => cmdSend("local:session:oracle", body, false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    // Exactly one pane injection, and it is the SHORT pointer, not the 1500-char body.
+    expect(sendKeysCalls).toHaveLength(1);
+    const injected = sendKeysCalls[0].text;
+    expect(injected.length).toBeLessThan(900);
+    expect(injected.includes("\n")).toBe(false);
+    expect(injected).toContain("full: ψ/inbox/msg.md");
+    expect(injected).not.toBe(`[test-node:sender] ${body}`);
+    // F4 output shows the route taken; feed state is queued/inbox-auto.
+    expect(logs.join("\n")).toContain("auto-routed: ≥900 bytes");
+    expect(logs.join("\n")).not.toContain("delivered (pane)");
+    expect(emitFeedCalls.at(-1)?.data.state).toBe("queued");
+    expect(emitFeedCalls.at(-1)?.data.route).toBe("inbox-auto");
+  });
+
+  test("F2: Thai 400-char body auto-routes on BYTE budget, not UTF-16 (Riddler HIGH)", async () => {
+    const body = "ก".repeat(400); // 400 UTF-16 units < 900, but 1200 UTF-8 bytes
+    await runCmd(() => cmdSend("local:session:oracle", body, false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    expect(sendKeysCalls).toHaveLength(1);
+    expect(sendKeysCalls[0].text).toContain("full: ψ/inbox/msg.md");
+    expect(sendKeysCalls[0].text).not.toBe(`[test-node:sender] ${body}`);
+    expect(logs.join("\n")).toContain("auto-routed: ≥900 bytes");
+  });
+
+  test("F2: CR-only body auto-routes (Riddler MED) — pane pointer has no CR/LF", async () => {
+    await runCmd(() => cmdSend("local:session:oracle", "a\rb", false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    expect(sendKeysCalls).toHaveLength(1);
+    expect(/[\r\n]/.test(sendKeysCalls[0].text)).toBe(false);
+    expect(logs.join("\n")).toContain("auto-routed: multiline");
+  });
+
+  test("F2: multiline body is auto-routed — pane pointer has no newline (closes 1b)", async () => {
+    await runCmd(() => cmdSend("local:session:oracle", "a\nb\nc", false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    expect(sendKeysCalls).toHaveLength(1);
+    expect(sendKeysCalls[0].text.includes("\n")).toBe(false);
+    expect(sendKeysCalls[0].text).toContain("full: ψ/inbox/msg.md");
+    expect(logs.join("\n")).toContain("auto-routed: multiline");
+  });
+
+  test("F2: short single-line body is unchanged — raw pane delivery", async () => {
+    await runCmd(() => cmdSend("local:session:oracle", "hello", false, {
+      receiverInbox: okInbox,
+      noVerifySubmit: true,
+    }));
+    expect(sendKeysCalls).toEqual([{ target: "session:oracle.0", text: "[test-node:sender] hello" }]);
+    expect(logs.join("\n")).toContain("delivered (pane)");
+  });
+
+  test("F4: auto-route wanted but inbox unavailable → labeled 'raw (fallback)' + warning", async () => {
+    const body = "x".repeat(1500);
+    await runCmd(() => cmdSend("local:session:oracle", body, false, {
+      receiverInbox: () => ({ ok: false as const, reason: "no repo for raw target" }),
+      noVerifySubmit: true,
+    }));
+    expect(exitCode).toBeUndefined();
+    // Fell back to raw injection (full body), and the route is labeled + warned.
+    expect(sendKeysCalls).toEqual([{ target: "session:oracle.0", text: `[test-node:sender] ${body}` }]);
+    expect(logs.join("\n")).toContain("delivered (raw (fallback))");
+    expect(logs.join("\n")).toContain("receiver inbox unavailable");
   });
 
   test("local delivery sends to non-agent panes by default", async () => {
@@ -724,6 +821,76 @@ describe("cmdSend — delivery branch coverage", () => {
     expect(logs.join("\n")).toContain("queued");
     expect(logs.join("\n")).not.toContain("delivered");
     expect(runHookCalls[0].name).toBe("after_send");
+  });
+
+  // --- item2 F2: fail-branch must record exactly one 'failed' row BEFORE exit ---
+  test("item2 F2: peer send failure records exactly one 'failed' row before exit", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "receiver 502" } }); // fault injection
+    await runCmd(() => cmdSend("remote:session:oracle", "boom"));
+    expect(exitCode).toBe(1);
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed");
+    expect(failed).toHaveLength(1); // exactly one, and reached before the mocked process.exit threw
+    expect(failed[0].data.route).toBe("peer");
+    expect(failed[0].data.direction).toBe("outbound");
+    expect(failed[0].data.text).toBe("[test-node:sender] boom");
+  });
+
+  test("item2 F2: cross-node --inbox failure records one 'failed' row before exit (the reproduced gap)", async () => {
+    resolveTargetReturn = { type: "peer", target: "gordon", node: "win", peerUrl: "http://win:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "inbox unwritable" } });
+    await runCmd(() => cmdSend("win:gordon", "x", false, { inboxOnly: true }));
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(curlFetchCalls[0].options.body)).toMatchObject({ inbox: true });
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed");
+    expect(failed).toHaveLength(1); // before this fix: 0 (fire-and-forget emit killed by process.exit)
+    expect(failed[0].data.route).toBe("peer");
+  });
+
+  test("item2 F2: successful peer send still records exactly one row (no duplicate)", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: true, status: 200, data: { ok: true, target: "remote:oracle.0", state: "delivered", lastLine: "ack" } });
+    await runCmd(() => cmdSend("remote:session:oracle", "ok"));
+    expect(exitCode).toBeUndefined();
+    expect(emitFeedCalls.filter(f => f.data?.text === "[test-node:sender] ok")).toHaveLength(1);
+  });
+
+  // Deferred emitFeed proves the AWAIT (not just the emit): the row is only
+  // recorded after a tick, so code that does NOT await before process.exit loses
+  // it. These FAIL on the pre-fix (fire-and-forget) code and PASS with the await.
+  test("item2 F2: peer failure — DEFERRED feed row still lands before exit (proves await)", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "receiver 502" } });
+    emitFeedMode = "deferred"; // row pushed on a later tick — only an awaited caller sees it
+    await runCmd(() => cmdSend("remote:session:oracle", "boom"));
+    expect(exitCode).toBe(1);
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed" && f.data?.route === "peer");
+    expect(failed).toHaveLength(1);
+  });
+
+  test("item2 F2: discovery failure — DEFERRED feed row still lands before exit (proves await)", async () => {
+    resolveTargetReturn = null;
+    findPeerUrl = "http://discovered:3456";
+    curlFetchHandler = () => ({ ok: false, status: 502, data: {} });
+    emitFeedMode = "deferred";
+    await runCmd(() => cmdSend("path/target", "boom"));
+    expect(exitCode).toBe(1);
+    const failed = emitFeedCalls.filter(f => f.data?.state === "failed" && f.data?.route === "discovery");
+    expect(failed).toHaveLength(1);
+  });
+
+  test("item2 F2: a stalled daemon does NOT drag the exit — bounded deadline honored", async () => {
+    resolveTargetReturn = { type: "peer", target: "oracle", node: "remote", peerUrl: "http://remote:3456" };
+    curlFetchHandler = () => ({ ok: false, status: 502, data: { ok: false, error: "receiver 502" } });
+    emitFeedMode = "hang"; // feed never resolves — the deadline must release the exit
+    process.env.MAW_FEED_FLUSH_MS = "30";
+    const t0 = Date.now();
+    await runCmd(() => cmdSend("remote:session:oracle", "boom"));
+    const elapsed = Date.now() - t0;
+    delete process.env.MAW_FEED_FLUSH_MS;
+    expect(exitCode).toBe(1);           // still exits with the original error code
+    expect(elapsed).toBeLessThan(1000); // not dragged by the never-resolving feed
+    expect(errs.join("\n")).toContain("Remote fetch failed"); // error surfaced regardless
   });
 
   test("peer delivery uses explicit sender override for message body and v3 from-signing", async () => {

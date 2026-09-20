@@ -487,7 +487,14 @@ export class Tmux {
   }
 
   async pasteBuffer(target: string): Promise<void> {
-    await this.run("paste-buffer", "-t", target);
+    // F1 (hey truncation class, 2026-09-19): -p = bracketed paste. tmux emits
+    // the ESC[200~…ESC[201~ wrappers ONLY when the receiving app has enabled
+    // bracketed-paste mode (?2004h), so this is a safe no-op for cooked shells
+    // (verified: -p into a plain cat delivered clean, no escape garbage) and
+    // makes newline-bearing pastes land as literal text in TUIs that support it
+    // instead of firing as submits (1b). Long/multiline hey bodies are also
+    // routed away from this path entirely by shouldAutoRouteToInbox (F2).
+    await this.run("paste-buffer", "-p", "-t", target);
   }
 
   /**

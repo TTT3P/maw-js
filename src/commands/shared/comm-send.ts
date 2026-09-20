@@ -10,7 +10,7 @@ import { Tmux } from "../../core/transport/tmux";
 import { AmbiguousMatchError } from "../../core/runtime/find-window";
 import { detectWindowMismatch } from "../../core/routing";
 import { loadConfig, cfgLimit } from "../../config";
-import { logMessage, emitFeed } from "./comm-log-feed";
+import { logMessage, emitFeed, flushWithDeadline } from "./comm-log-feed";
 import { buildMessageLifecycleFeedEvent, type MessageLifecycleInput } from "../../lib/message-events";
 import {
   defaultReceiverInboxWriter,
@@ -24,6 +24,46 @@ import {
 import { checkBusyGuard, queueForDispatch } from "../../core/agent-status-guard";
 import { runPluginEventHooks } from "../../plugin/event-hooks";
 import { notifyLiveInboxReceiver } from "./live-inbox-notify";
+
+/**
+ * F3 (hey truncation class, 2026-09-19 · receipt fix-hey-truncation): the safe
+ * single-line cap for RAW pane injection. A single line pasted into a receiver's
+ * line-input is silently dropped once it reaches the OS cooked-mode canonical
+ * limit (macOS/BSD MAX_CANON = 1024 — reproduced) or a TUI's own paste cap
+ * (~2000, observed). We cannot reliably detect the receiver's input mode, so we
+ * route by this BYTE budget OR any CR/LF (see shouldAutoRouteToInbox) rather
+ * than chunk. 900 is a conservative constant of BYTES below the 1024-byte floor.
+ * The budget is bytes, not UTF-16 units: 400 Thai chars are 416 units but ~1216
+ * bytes, so a UTF-16 count would leave ordinary Thai text on the unsafe raw path
+ * (Riddler HIGH, review 2026-09-19).
+ */
+export const HEY_PANE_SAFE_CAP = 900;
+
+/**
+ * F2 routing decision: long OR multiline text must never be pane-injected raw
+ * (long → dropped at the receiver line cap = 1a; embedded newline → each line
+ * submits separately = 1b). The full message is always persisted to the
+ * receiver inbox first (#1967), so routing loses nothing. `--inbox` is a
+ * persist-only contract and keeps its existing path unchanged.
+ */
+export function shouldAutoRouteToInbox(text: string, inboxOnly: boolean): boolean {
+  if (inboxOnly) return false;
+  // BYTE budget (not UTF-16 .length): the receiver line cap counts bytes, so
+  // multi-byte scripts (Thai/CJK/emoji) must be measured in UTF-8. Any CR or LF
+  // is a submit boundary at the receiver (CR-only fragments too — Riddler MED).
+  return Buffer.byteLength(text, "utf8") >= HEY_PANE_SAFE_CAP || /[\r\n]/.test(text);
+}
+
+/**
+ * F2 pointer: the single short line injected into the pane in place of the
+ * long/multiline body. Whitespace is collapsed so the pointer itself can never
+ * carry a newline (which would re-introduce 1b).
+ */
+export function buildInboxPointer(fromDisplay: string, text: string, filename: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  const preview = oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+  return `[${fromDisplay}] ${preview} · full: ψ/inbox/${filename} (maw inbox)`;
+}
 
 /**
  * Resolve a `session:window` target to a specific pane running an agent
@@ -222,9 +262,21 @@ export function formatSignedMessage(
   return `${leading}[${node}:${senderName}] ${body}`;
 }
 
-function emitMessageFeed(input: MessageLifecycleInput, port: number) {
+// Returns the feed POST promise so exit-adjacent fail branches can await the
+// ledger write before process.exit (item2 F2). Happy-path callers ignore it.
+// timeoutMs (exit-adjacent only) self-aborts the request.
+function emitMessageFeed(input: MessageLifecycleInput, port: number, timeoutMs?: number): Promise<void> {
   const event = buildMessageLifecycleFeedEvent(input);
-  emitFeed(event.event, event.oracle, event.host, event.message, port, event.data);
+  return emitFeed(event.event, event.oracle, event.host, event.message, port, event.data, timeoutMs);
+}
+
+// item2 F2: bounded best-effort feed flush before a process.exit on an error
+// path. The record is attempted, but a stalled daemon never drags the exit past
+// this deadline. Overridable for tests via MAW_FEED_FLUSH_MS.
+const FEED_FLUSH_DEADLINE_MS = 1500;
+function feedFlushMs(): number {
+  const v = Number(process.env.MAW_FEED_FLUSH_MS);
+  return Number.isFinite(v) && v > 0 ? v : FEED_FLUSH_DEADLINE_MS;
 }
 
 /**
@@ -932,6 +984,56 @@ export async function cmdSend(
     // injection is only the live wake-up. Persist first so a tmux race cannot
     // silently drop the message before it reaches ψ/inbox.
     const inbox = await writeReceiverInbox(target);
+    const wantedAutoRoute = shouldAutoRouteToInbox(outboundMessage, false);
+
+    // F2 (hey truncation class): never pane-inject long or multiline text raw.
+    // The receiver's line-input drops >=~1024-char lines (cooked MAX_CANON) and
+    // treats embedded newlines as separate submits (fragmentation). The full
+    // body is already durably in the inbox (above), so inject only a short
+    // pointer line and auto-submit that. `--inbox` is handled earlier, untouched.
+    if (wantedAutoRoute && inbox?.ok) {
+      // Use the raw message for the preview — outboundMessage already carries
+      // the [from] prefix, and buildInboxPointer adds its own.
+      const pointer = buildInboxPointer(senderIdentity.display, message, inbox.filename);
+      try {
+        await sendKeys(target, pointer);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // Pointer failed, but the full text is already in the inbox — report
+        // queued rather than losing anything.
+        if (logQueuedInbox(inbox, target, `auto-routed (long/multiline); pointer injection failed: ${msg}`)) {
+          await notifyQueuedInbox(inbox, target, "auto-routed; pointer injection failed");
+          return;
+        }
+        console.error(`\x1b[31merror\x1b[0m: pointer injection failed for ${target}: ${msg}`);
+        process.exit(1);
+      }
+      if (!opts.noVerifySubmit && process.env.MAW_TEST_MODE !== "1") {
+        const verify = await verifySubmitDelivered(target, pointer);
+        if (verify.warning) console.log(`  \x1b[33m⚠\x1b[0m ${verify.warning}`);
+      }
+      await runHook("after_send", { to: query, message: outboundMessage });
+      if (!config.node) throw new Error("config.node is required — set 'node' in maw.config.json");
+      logMessage(senderName, query, outboundMessage, "inbox");
+      emitMessageFeed({
+        direction: "outbound",
+        state: "queued",
+        channel: "hey",
+        route: "inbox-auto",
+        from: senderIdentity.display,
+        to: query,
+        target,
+        text: outboundMessage,
+        lastLine: "auto-routed (long/multiline); pointer injected to pane",
+        signed: true,
+      }, config.port || 3456);
+      // F4 — output shows the route taken so senders learn the behavior.
+      const why = /[\r\n]/.test(outboundMessage) ? "multiline" : `≥${HEY_PANE_SAFE_CAP} bytes`;
+      console.log(`\x1b[33mqueued (inbox, auto-routed: ${why})\x1b[0m → ${inbox.oracle} ψ/inbox/${inbox.filename}`);
+      console.log(`\x1b[90m  ⤷ pane pointer: ${pointer}\x1b[0m`);
+      return;
+    }
+
     try {
       await sendKeys(target, outboundMessage);
     } catch (error) {
@@ -974,7 +1076,14 @@ export async function cmdSend(
       lastLine,
       signed: true,
     }, config.port || 3456);
-    console.log(`\x1b[32mdelivered\x1b[0m → ${target}: ${outboundMessage}`);
+    // F4 — when auto-route was wanted (long/multiline) but the receiver inbox
+    // was unavailable, we fell back to raw pane injection; label the route
+    // 'raw (fallback)' + warn so the operator sees the still-risky path taken.
+    const paneRoute = wantedAutoRoute ? "raw (fallback)" : "pane";
+    console.log(`\x1b[32mdelivered (${paneRoute})\x1b[0m → ${target}: ${outboundMessage}`);
+    if (wantedAutoRoute) {
+      console.log(`  \x1b[33m⚠\x1b[0m auto-route wanted (long/multiline) but receiver inbox unavailable — sent raw; text may truncate at the receiver line cap`);
+    }
     if (lastLine) console.log(`\x1b[90m  ⤷ ${lastLine.slice(0, cfgLimit("messageTruncate"))}\x1b[0m`);
     await runPluginEventHooks("transport:after_send", {
       event: "transport:after_send",
@@ -1046,21 +1155,27 @@ export async function cmdSend(
       return;
     }
     const underlying = res.data?.error || (res.status ? `HTTP ${res.status}` : "connection failed");
-    emitMessageFeed({
-      direction: "outbound",
-      state: "failed",
-      channel: "hey",
-      route: "peer",
-      from: senderIdentity.display,
-      to: `${result.node}:${result.target}`,
-      target: result.target,
-      peerUrl: result.peerUrl,
-      text: outboundMessage,
-      error: underlying,
-      signed: true,
-    }, config.port || 3456);
+    // Surface the error FIRST so a stalled daemon can never delay what the user
+    // sees; then record the failed row before exit, but bounded (item2 F2 +
+    // Riddler review: no fire-and-forget on exit, no unbounded await either).
     console.error(`\x1b[31merror\x1b[0m: Remote fetch failed for peer ${result.peerUrl} (${result.node}): ${underlying}`);
     console.error(`\x1b[33mhint\x1b[0m:  check peer connectivity: maw health`);
+    {
+      const ms = feedFlushMs();
+      await flushWithDeadline(emitMessageFeed({
+        direction: "outbound",
+        state: "failed",
+        channel: "hey",
+        route: "peer",
+        from: senderIdentity.display,
+        to: `${result.node}:${result.target}`,
+        target: result.target,
+        peerUrl: result.peerUrl,
+        text: outboundMessage,
+        error: underlying,
+        signed: true,
+      }, config.port || 3456, ms), ms);
+    }
     process.exit(1);
   }
 
@@ -1117,21 +1232,25 @@ export async function cmdSend(
     // Remote fetch was attempted but failed — surface the remote failure explicitly (#411).
     // Never fall through to "not found in local sessions" when the real problem is network.
     const underlying = res.data?.error || (res.status ? `HTTP ${res.status}` : "connection failed");
-    emitMessageFeed({
-      direction: "outbound",
-      state: "failed",
-      channel: "hey",
-      route: "discovery",
-      from: senderIdentity.display,
-      to: query,
-      target: query,
-      peerUrl,
-      text: outboundMessage,
-      error: underlying,
-      signed: true,
-    }, config.port || 3456);
+    // item2 F2: error first, then bounded failed-row flush before exit (see peer branch).
     console.error(`\x1b[31merror\x1b[0m: Remote fetch failed for peer ${peerUrl}: ${underlying}`);
     console.error(`\x1b[33mhint\x1b[0m:  check peer connectivity: maw health`);
+    {
+      const ms = feedFlushMs();
+      await flushWithDeadline(emitMessageFeed({
+        direction: "outbound",
+        state: "failed",
+        channel: "hey",
+        route: "discovery",
+        from: senderIdentity.display,
+        to: query,
+        target: query,
+        peerUrl,
+        text: outboundMessage,
+        error: underlying,
+        signed: true,
+      }, config.port || 3456, ms), ms);
+    }
     process.exit(1);
   }
 
